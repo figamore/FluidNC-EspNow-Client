@@ -1,7 +1,8 @@
 {
   "name": "FluidNC-EspNow-Client",
   "version": "1.0.0",
-  "description": "Build secure FluidNC ESP-NOW peripherals.",
+  "description": "Build secure FluidNC ESP-NOW peripherals on ESP32 - pendants, DROs, macro pads, probes, and button panels.",
+  "homepage": "https://figamore.github.io/FluidNC-EspNow-Client/",
   "keywords": [
     "esp-now",
     "fluidnc",
