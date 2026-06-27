@@ -1,0 +1,6 @@
+/* Slightly larger body + heading text.
+   Material's default content size is 0.8rem; headings scale off this in em,
+   so bumping it here enlarges the whole article proportionally. */
+.md-typeset {
+  font-size: 0.85rem;
+}

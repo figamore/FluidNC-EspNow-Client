@@ -18,8 +18,8 @@
   cancel, and feed/rapid/spindle overrides and coolant toggles.
 - Convenience helpers for homing, unlock, safe macros, and safe jog commands.
 
-See the [API docs](docs/api.md) for the full list of features: events, status fields,
-commands, realtime controls, configuration, and limitations.
+See the [API Docs](https://figamore.github.io/FluidNC-EspNow-Client/) for
+the full guide: getting started, events, status fields, commands, realtime controls, configuration, and limitations.
 
 ## Install In A PlatformIO Project
 
