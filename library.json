@@ -38,6 +38,9 @@
       "README.md",
       "LICENSE",
       "NOTICE"
+    ],
+    "exclude": [
+      "**/.DS_Store"
     ]
   }
 }
