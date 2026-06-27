@@ -1,0 +1,42 @@
+{
+  "name": "FluidNC-EspNow-Client",
+  "version": "1.0.0",
+  "description": "Build secure FluidNC ESP-NOW peripherals.",
+  "keywords": [
+    "esp-now",
+    "fluidnc",
+    "cnc",
+    "grbl",
+    "esp32"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/figamore/FluidNC-EspNow-Client.git"
+  },
+  "authors": [
+    {
+      "name": "Figamore",
+      "maintainer": true
+    }
+  ],
+  "license": "GPL-3.0-only",
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "headers": "FluidNCEspNowClient.h",
+  "dependencies": {
+    "figamore/EspNowLink": "^1.0.0"
+  },
+  "export": {
+    "include": [
+      "src",
+      "examples",
+      "docs",
+      "test",
+      "library.json",
+      "platformio.ini",
+      "README.md",
+      "LICENSE",
+      "NOTICE"
+    ]
+  }
+}

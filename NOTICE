@@ -1,0 +1,34 @@
+FluidNC-EspNow-Client
+Copyright 2026 Figamore
+
+FluidNC-EspNow-Client is licensed under the GNU General Public License v3.0 only.
+
+This product bundles GrblParser, which parses the Grbl/FluidNC line protocol.
+  GrblParser - Copyright (c) 2023 Mitch Bradley - GPLv3
+  https://github.com/MitchBradley/GrblParser
+  Vendored under src/GrblParser at commit 78475e1.
+
+The vendored GrblParser sources carry small local fixes, each marked with a
+"FluidNCEspNowClient local" comment in src/GrblParser/GrblParserC.c:
+  - collect() bounds writes to REPORT_BUFFER_LEN (upstream could overflow the
+    report buffer on a long line or newline-less stream).
+  - parse_status_report() initializes the feed/spindle pair and only reports it
+    when the FS: field is present (upstream could publish uninitialized values).
+  - parse_status_report() clears the control-pin scratch once per report instead
+    of per field (upstream cleared it mid-parse, dropping the Pn: field).
+  - probe-pin edge state persists across reports so it clears when the pin goes
+    away (upstream compared against a per-call local that was always false).
+  - parse_probe() splits [PRB:] reports on ':' (upstream used '|', so probe
+    reports were never parsed).
+  - parse_status_report() sets has_linenum when the Ln: field is present
+    (upstream read the value but never reported it).
+  - parse_gcode_report() parses the F (feed) word from [GC:] (upstream left it
+    commented out, so the gcode-modes feed was always zero).
+  - Added fnc_parser_reset() to clear remembered state (WCO, pins, gcode modes,
+    partial line) when switching machines; WCO and probe-pin state were moved to
+    file scope so they can be reset.
+
+FluidNC-EspNow-Client provides the required fnc_getchar/fnc_putchar/milliseconds symbols
+and overrides the parser's weak show_* callbacks to drive the FluidNC-EspNow-Client API.
+Do not link GrblParser separately in a project that already uses FluidNC-EspNow-Client;
+the symbols would clash.
