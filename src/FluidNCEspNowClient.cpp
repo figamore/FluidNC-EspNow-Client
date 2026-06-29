@@ -778,7 +778,8 @@ bool FluidNCEspNowClient::runFile(const char* path) {
 }
 
 bool FluidNCEspNowClient::stopFile() {
-  return sendCommand("$SD/Stop", FluidNCCommandMode::RequireConnected);
+  // FluidNC has no SD-stop command; a realtime reset is how a running job aborts.
+  return softReset();
 }
 
 bool FluidNCEspNowClient::requestStatus() {

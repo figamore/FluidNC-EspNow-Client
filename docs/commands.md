@@ -55,7 +55,7 @@ fluidnc.requestFileList("/sd");
 fluidnc.runFile("/sd/job.nc");      // Requires Idle
 fluidnc.feedHold();                 // Pause running job
 fluidnc.cycleStart();               // Resume held job
-fluidnc.stopFile();                 // Ask FluidNC to stop the SD job
+fluidnc.stopFile();                 // Abort the running SD job (realtime reset)
 fluidnc.softReset();                // Emergency stop/reset
 ```
 
