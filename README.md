@@ -16,7 +16,7 @@
 - Newline-framed command helpers.
 - Named realtime controls for status, feed hold, cycle start, soft reset, jog
   cancel, and feed/rapid/spindle overrides and coolant toggles.
-- Convenience helpers for homing, unlock, safe macros, and safe jog commands.
+- Convenience helpers for homing, unlock, safe macros, safe jog commands, and SD file browsing/running.
 
 See the [API Docs](https://figamore.github.io/FluidNC-EspNow-Client/) for
 the full guide: getting started, events, status fields, commands, realtime controls, configuration, and limitations.

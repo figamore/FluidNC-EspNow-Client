@@ -4,12 +4,14 @@
 #include "FluidNCEspNowClient.h"
 
 #include "GrblParser/GrblParserC.h"
+#include "JsonStreamingParser/JsonStreamingParser.h"
 
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 extern "C" {
 extern const char* error_description[];
@@ -46,11 +48,111 @@ void copyAxes(FluidNCPosition& out, const pos_t* axes, size_t n) {
   out.valid = true;
 }
 
+void copyString(char* dest, size_t destSize, const char* src) {
+  if (!dest || destSize == 0) {
+    return;
+  }
+  if (!src) {
+    dest[0] = '\0';
+    return;
+  }
+  strncpy(dest, src, destSize - 1);
+  dest[destSize - 1] = '\0';
+}
+
+// Files before directories, then case-insensitive alphabetical (matches the
+// WebUI / FluidDial ordering).
+int compareFileInfo(const void* a, const void* b) {
+  const FluidNCFileInfo* fa = static_cast<const FluidNCFileInfo*>(a);
+  const FluidNCFileInfo* fb = static_cast<const FluidNCFileInfo*>(b);
+  if (fa->isDirectory() != fb->isDirectory()) {
+    return fa->isDirectory() ? 1 : -1;
+  }
+  return strcasecmp(fa->name, fb->name);
+}
+
 }  // namespace
+
+class fluidnc_detail::FileListListener : public JsonListener {
+ public:
+  explicit FileListListener(FluidNCEspNowClient* client) : client_(client) {}
+
+  void whitespace(char) override {}
+  void startDocument() override {
+    client_->fileListBegin();
+    sawFiles_ = false;
+    expectFiles_ = false;
+    inFiles_ = false;
+    inFile_ = false;
+    hasName_ = false;
+    key_[0] = '\0';
+  }
+  void endDocument() override { client_->fileListComplete(sawFiles_); }
+
+  void startArray() override {
+    if (expectFiles_) {
+      inFiles_ = true;
+      expectFiles_ = false;
+    }
+  }
+  void endArray() override { inFiles_ = false; }
+
+  void startObject() override {
+    if (inFiles_) {
+      inFile_ = true;
+      hasName_ = false;
+      name_[0] = '\0';
+      size_ = 0;
+    }
+  }
+  void endObject() override {
+    if (inFile_) {
+      if (hasName_) {
+        client_->fileListAddEntry(name_, size_);
+      }
+      inFile_ = false;
+    }
+  }
+
+  void key(const char* key) override {
+    copyString(key_, sizeof(key_), key);
+    if (!inFiles_ && strcmp(key_, "files") == 0) {
+      expectFiles_ = true;
+      sawFiles_ = true;
+    }
+  }
+
+  void value(const char* value) override {
+    if (inFile_) {
+      if (strcmp(key_, "name") == 0) {
+        copyString(name_, sizeof(name_), value);
+        hasName_ = true;
+      } else if (strcmp(key_, "size") == 0) {
+        size_ = strtol(value, nullptr, 10);
+      }
+    } else if (strcmp(key_, "path") == 0) {
+      client_->fileListSetPath(value);
+    } else if (strcmp(key_, "status") == 0 || strcmp(key_, "error") == 0) {
+      client_->fileListSetStatus(value);
+    }
+  }
+
+ private:
+  FluidNCEspNowClient* client_;
+  char key_[24] = {};
+  char name_[FluidNCFileInfo::kNameSize] = {};
+  int32_t size_ = 0;
+  bool expectFiles_ = false;
+  bool sawFiles_ = false;
+  bool inFiles_ = false;
+  bool inFile_ = false;
+  bool hasName_ = false;
+};
 
 struct fluidnc_detail::ParserBridge {
   static void beginStatus(FluidNCEspNowClient* self) {
     self->parseAccum_ = self->latestStatus_;
+    self->parseAccum_.fileActive = false;
   }
 
   static void state(FluidNCEspNowClient* self, const char* value) {
@@ -153,8 +255,30 @@ struct fluidnc_detail::ParserBridge {
   }
 
   static void message(FluidNCEspNowClient* self, const char* category, const char* text) {
+    if (category && strcmp(category, "JSON") == 0) {
+      self->handleJsonMessage(text);
+    }
     if (self->messageCallback_) {
       self->messageCallback_(category ? category : "", text ? text : "");
+    }
+  }
+
+  static void json(FluidNCEspNowClient* self, const char* text) {
+    self->handleJsonMessage(text);
+  }
+
+  static void other(FluidNCEspNowClient* self, const char* line) {
+    if (!line) {
+      return;
+    }
+
+    const char* p = line;
+    while (*p && isspace(static_cast<unsigned char>(*p))) {
+      ++p;
+    }
+
+    if (*p == '{' || self->jsonInProgress()) {
+      self->handleJsonMessage(p);
     }
   }
 
@@ -312,6 +436,18 @@ void handle_msg(char* command, char* arguments) {
   }
 }
 
+void handle_json(const char* line) {
+  if (g_activeParser) {
+    fluidnc_detail::ParserBridge::json(g_activeParser, line);
+  }
+}
+
+void handle_other(char* line) {
+  if (g_activeParser) {
+    fluidnc_detail::ParserBridge::other(g_activeParser, line);
+  }
+}
+
 void show_probe(const pos_t* axes, const bool probe_success, size_t n_axis) {
   if (g_activeParser) {
     fluidnc_detail::ParserBridge::probe(g_activeParser, axes, probe_success, n_axis);
@@ -379,6 +515,10 @@ FluidNCEspNowClient::FluidNCEspNowClient(const char* hostname) {
 }
 
 FluidNCEspNowClient::~FluidNCEspNowClient() {
+  delete jsonParser_;
+  jsonParser_ = nullptr;
+  delete fileListener_;
+  fileListener_ = nullptr;
   if (g_activeParser == this) {
     g_activeParser = nullptr;
   }
@@ -543,6 +683,8 @@ void FluidNCEspNowClient::resetStatusState() {
   parseAccum_ = {};
   hasStatus_ = false;
   lineLength_ = 0;
+  fileListPending_ = false;
+  resetFileListParser("/sd");
   fnc_parser_reset();
 }
 
@@ -586,6 +728,57 @@ bool FluidNCEspNowClient::runMacro(const char* command) {
 
 bool FluidNCEspNowClient::runMacro(const String& command) {
   return runMacro(command.c_str());
+}
+
+bool FluidNCEspNowClient::requestFileList(const char* path) {
+  if (!path || path[0] == '\0') {
+    path = "/sd";
+  }
+
+  char command[160];
+  const int written = snprintf(command, sizeof(command), "$Files/ListGCode=%s", path);
+  if (written < 0 || static_cast<size_t>(written) >= sizeof(command)) {
+    return false;
+  }
+
+  if (!ensureFileListStorage()) {
+    return false;
+  }
+
+  resetFileListParser(path);
+  fileListPending_ = true;
+  return sendCommand(command, FluidNCCommandMode::RequireConnected);
+}
+
+bool FluidNCEspNowClient::requestFilePreview(const char* path, int firstLine, int lineCount) {
+  if (!path || path[0] == '\0' || firstLine < 0 || lineCount <= 0) {
+    return false;
+  }
+
+  char command[176];
+  const int lastLine = firstLine + lineCount;
+  const int written = snprintf(command, sizeof(command), "$File/ShowSome=%d:%d,%s", firstLine, lastLine, path);
+  if (written < 0 || static_cast<size_t>(written) >= sizeof(command)) {
+    return false;
+  }
+  return sendCommand(command, FluidNCCommandMode::RequireConnected);
+}
+
+bool FluidNCEspNowClient::runFile(const char* path) {
+  if (!path || path[0] == '\0') {
+    return false;
+  }
+
+  char command[160];
+  const int written = snprintf(command, sizeof(command), "$SD/Run=%s", path);
+  if (written < 0 || static_cast<size_t>(written) >= sizeof(command)) {
+    return false;
+  }
+  return sendCommand(command, FluidNCCommandMode::RequireIdle);
+}
+
+bool FluidNCEspNowClient::stopFile() {
+  return sendCommand("$SD/Stop", FluidNCCommandMode::RequireConnected);
 }
 
 bool FluidNCEspNowClient::requestStatus() {
@@ -738,6 +931,121 @@ void FluidNCEspNowClient::ingest(const uint8_t* data, size_t len) {
   }
 }
 
+// FluidNC streams a file list as JSON split into ~100 byte [MSG:JSON:]
+// chunks; on the acked channel it waits for a 0xB2 ack before sending the
+// next one. Feed each chunk through the streaming parser (tracking brace
+// depth so the document survives the chunk boundaries, only resetting at
+// depth 0), then ack so the rest of the list arrives.
+void FluidNCEspNowClient::handleJsonMessage(const char* text) {
+  if (!text) {
+    return;
+  }
+
+  if (jsonParser_ && fileListener_) {
+    if (jsonNeedsReset_ && jsonDepth_ == 0) {
+      jsonNeedsReset_ = false;
+      jsonParser_->setListener(fileListener_);
+      jsonParser_->reset();
+    }
+
+    for (const char* p = text; *p; ++p) {
+      const char c = *p;
+      if (jsonEscape_) {
+        jsonEscape_ = false;
+      } else if (jsonInString_) {
+        if (c == '\\') {
+          jsonEscape_ = true;
+        } else if (c == '"') {
+          jsonInString_ = false;
+        }
+      } else if (c == '"') {
+        jsonInString_ = true;
+      } else if (c == '{') {
+        ++jsonDepth_;
+      } else if (c == '}' && jsonDepth_ > 0) {
+        --jsonDepth_;
+      }
+      jsonParser_->parse(c);
+    }
+
+    // Back at the outermost level: the document is complete, so re-arm the
+    // reset for the next one.
+    if (jsonDepth_ == 0) {
+      jsonNeedsReset_ = true;
+    }
+  }
+
+  realtime(ACK);
+}
+
+void FluidNCEspNowClient::resetFileListParser(const char* path) {
+  fileList_.clear();
+  jsonStatus_[0] = '\0';
+  jsonDepth_ = 0;
+  jsonInString_ = false;
+  jsonEscape_ = false;
+  jsonNeedsReset_ = true;
+  if (path && path[0]) {
+    copyString(fileListPath_, sizeof(fileListPath_), path);
+  }
+}
+
+void FluidNCEspNowClient::fileListBegin() {
+  fileList_.clear();
+  copyString(jsonStatus_, sizeof(jsonStatus_), "ok");
+}
+
+void FluidNCEspNowClient::fileListAddEntry(const char* name, int32_t size) {
+  if (!name || !name[0]) {
+    return;
+  }
+  FluidNCFileInfo entry;
+  copyString(entry.name, sizeof(entry.name), name);
+  entry.size = size;
+  fileList_.push_back(entry);
+}
+
+void FluidNCEspNowClient::fileListSetPath(const char* path) {
+  if (path && path[0]) {
+    copyString(fileListPath_, sizeof(fileListPath_), path);
+  }
+}
+
+void FluidNCEspNowClient::fileListSetStatus(const char* status) {
+  copyString(jsonStatus_, sizeof(jsonStatus_), status ? status : "");
+}
+
+void FluidNCEspNowClient::fileListComplete(bool sawFiles) {
+  if (!fileListPending_) {
+    return;
+  }
+  const bool ok = jsonStatus_[0] == '\0' || strcmp(jsonStatus_, "ok") == 0;
+  if (sawFiles && ok) {
+    fileListPending_ = false;
+    if (fileList_.size() > 1) {
+      qsort(fileList_.data(), fileList_.size(), sizeof(FluidNCFileInfo), compareFileInfo);
+    }
+    if (fileListCallback_) {
+      fileListCallback_(fileListPath_, fileList_.data(), fileList_.size(), false);
+    }
+  } else if (!ok) {
+    fileListPending_ = false;
+    if (fileListErrorCallback_) {
+      fileListErrorCallback_(fileListPath_, jsonStatus_);
+    }
+  }
+}
+
+bool FluidNCEspNowClient::ensureFileListStorage() {
+  if (!jsonParser_) {
+    jsonParser_ = new JsonStreamingParser();
+  }
+  if (!fileListener_) {
+    fileListener_ = new fluidnc_detail::FileListListener(this);
+  }
+  return jsonParser_ && fileListener_;
+}
+
 void FluidNCEspNowClient::onEvent(EventCallback cb) {
   eventCallback_ = cb;
 }
@@ -816,6 +1124,14 @@ void FluidNCEspNowClient::onVersion(VersionCallback cb) {
 
 void FluidNCEspNowClient::onOffset(OffsetCallback cb) {
   offsetCallback_ = cb;
+}
+
+void FluidNCEspNowClient::onFileList(FileListCallback cb) {
+  fileListCallback_ = cb;
+}
+
+void FluidNCEspNowClient::onFileListError(FileListErrorCallback cb) {
+  fileListErrorCallback_ = cb;
 }
 
 EspNowLink& FluidNCEspNowClient::link() {

@@ -7,9 +7,13 @@
 #include <EspNowLink.h>
 
 #include <functional>
+#include <vector>
+
+class JsonStreamingParser;
 
 namespace fluidnc_detail {
 struct ParserBridge;
+class FileListListener;
 }
 
 struct FluidNCPosition {
@@ -82,6 +86,15 @@ struct FluidNCGcodeModes {
   int32_t feed = 0;
 };
 
+struct FluidNCFileInfo {
+  static constexpr size_t kNameSize = 96;
+
+  char name[kNameSize] = {};
+  int32_t size = 0;
+
+  bool isDirectory() const { return size < 0; }
+};
+
 enum class FluidNCCommandMode : uint8_t {
   SendAlways,
   RequireConnected,
@@ -126,6 +139,8 @@ class FluidNCEspNowClient {
   using GcodeModesCallback = std::function<void(const FluidNCGcodeModes& modes)>;
   using VersionCallback = std::function<void(const char* grblVersion, const char* fluidncVersion)>;
   using OffsetCallback = std::function<void(const char* name, const FluidNCPosition& offset)>;
+  using FileListCallback = std::function<void(const char* path, const FluidNCFileInfo* files, size_t count, bool truncated)>;
+  using FileListErrorCallback = std::function<void(const char* path, const char* status)>;
 
   static constexpr const char* kPairingWindowLabel = "fluidnc-espnow-pairing-window-v1";
   static constexpr const char* kPairingSessionLabel = "fluidnc-espnow-pairing-session-v1";
@@ -171,6 +186,10 @@ class FluidNCEspNowClient {
   bool sendCommand(const String& command, FluidNCCommandMode mode = FluidNCCommandMode::RequireConnected);
   bool runMacro(const char* command);
   bool runMacro(const String& command);
+  bool requestFileList(const char* path = "/sd");
+  bool requestFilePreview(const char* path, int firstLine, int lineCount);
+  bool runFile(const char* path);
+  bool stopFile();
   bool requestStatus();
   bool feedHold();
   bool cycleStart();
@@ -223,6 +242,8 @@ class FluidNCEspNowClient {
   void onGcodeModes(GcodeModesCallback cb);
   void onVersion(VersionCallback cb);
   void onOffset(OffsetCallback cb);
+  void onFileList(FileListCallback cb);
+  void onFileListError(FileListErrorCallback cb);
 
   EspNowLink& link();
   const EspNowLink& link() const;
@@ -232,14 +253,28 @@ class FluidNCEspNowClient {
 
  private:
   friend struct fluidnc_detail::ParserBridge;
+  friend class fluidnc_detail::FileListListener;
 
   static constexpr size_t kLineBufferSize = 192;
+  static constexpr size_t kFileListPathSize = 96;
+  static constexpr size_t kJsonStatusSize = 24;
 
   bool profileToMachine(size_t index, const EspNowLinkProfile& profile, FluidNCMachine& out) const;
   bool eventMachine(const uint8_t mac[6], FluidNCMachine& out) const;
   void installCallbacks();
   void handleEvent(const EspNowLinkEventInfo& event);
   void handleReceive(const uint8_t* data, size_t len);
+  void handleJsonMessage(const char* text);
+  void resetFileListParser(const char* path = nullptr);
+  bool ensureFileListStorage();
+  bool jsonInProgress() const { return jsonDepth_ > 0; }
+
+  void fileListBegin();
+  void fileListAddEntry(const char* name, int32_t size);
+  void fileListSetPath(const char* path);
+  void fileListSetStatus(const char* status);
+  void fileListComplete(bool sawFiles);
+
   void resetStatusState();
 
   EspNowLink link_;
@@ -264,6 +299,8 @@ class FluidNCEspNowClient {
   GcodeModesCallback gcodeModesCallback_;
   VersionCallback versionCallback_;
   OffsetCallback offsetCallback_;
+  FileListCallback fileListCallback_;
+  FileListErrorCallback fileListErrorCallback_;
   FluidNCStatus latestStatus_;
   FluidNCStatus parseAccum_;
   bool hasStatus_ = false;
@@ -271,4 +308,16 @@ class FluidNCEspNowClient {
   uint32_t lastStatusPollMs_ = 0;
   char lineBuffer_[kLineBufferSize] = {};
   size_t lineLength_ = 0;
+
+  std::vector<FluidNCFileInfo> fileList_;
+  char fileListPath_[kFileListPathSize] = "/sd";
+  char jsonStatus_[kJsonStatusSize] = {};
+
+  JsonStreamingParser* jsonParser_ = nullptr;
+  fluidnc_detail::FileListListener* fileListener_ = nullptr;
+  int jsonDepth_ = 0;
+  bool jsonInString_ = false;
+  bool jsonEscape_ = false;
+  bool jsonNeedsReset_ = true;
+  bool fileListPending_ = false;
 };
